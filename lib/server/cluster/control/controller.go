@@ -734,6 +734,7 @@ func (c *Controller) AddNodes(task concurrency.Task, count int, req *pb.HostDefi
 		}
 		subtasks = append(subtasks, subtask)
 	}
+
 	for _, s := range subtasks {
 		result, err := s.Wait()
 		if err != nil {
@@ -745,18 +746,31 @@ func (c *Controller) AddNodes(task concurrency.Task, count int, req *pb.HostDefi
 			}
 		}
 	}
-	hostClt := client.New().Host
 
 	// Starting from here, delete nodes if exiting with error
 	newHosts := hosts
 	defer func() {
-		if err != nil {
-			if len(newHosts) > 0 {
-				derr := hostClt.Delete(newHosts, temporal.GetExecutionTimeout())
-				if derr != nil {
-					log.Errorf("failed to delete nodes after failure to expand cluster")
+		if err != nil && len(newHosts) > 0 {
+			var subtasks []concurrency.Task
+			for _, v := range newHosts {
+				subtask, tErr := task.New()
+				if tErr != nil {
+					err = scerr.AddConsequence(err, tErr)
+					continue
 				}
-				err = scerr.AddConsequence(err, derr)
+				subtask, tErr = subtask.Start(c.foreman.taskDeleteNode, v)
+				if tErr != nil {
+					err = scerr.AddConsequence(err, tErr)
+					continue
+				}
+				subtasks = append(subtasks, subtask)
+			}
+
+			for _, s := range subtasks {
+				_, state := s.Wait()
+				if state != nil {
+					err = scerr.AddConsequence(err, state)
+				}
 			}
 		}
 	}()
